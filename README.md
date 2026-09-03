@@ -1,8 +1,6 @@
 # Void Status
-<img width="141" height="103" alt="image" src="https://github.com/user-attachments/assets/cc1f8eb9-24b8-4bc3-94a2-0f408485947c" /><img width="88" height="95" alt="image" src="https://github.com/user-attachments/assets/d889ba38-6214-42b8-bebb-06871bf75f03" />
 
 pyRevit extension for void approval. Select openings and stamp **Approved by**, **Pending by**, or **Rejected by** with your discipline. There is no extra ribbon tab: settings live on **Add-Ins**, and the status buttons are copied onto **Modify** when something is selected (same idea as MMI).
-
 
 ## Ribbon
 
