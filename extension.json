@@ -1,0 +1,13 @@
+{
+    "builtin": "False",
+    "type": "extension",
+    "rocket_mode_compatible": "true",
+    "name": "Void Status",
+    "description": "Void approval (Approved / Pending / Rejected) with project-stored XML settings.",
+    "author": "Jonatan Jacobsson",
+    "author_profile": "https://github.com/jonatanjacobsson",
+    "url": "https://github.com/byggstyrning/pyVoidStatus.extension",
+    "website": "https://www.byggstyrning.se",
+    "image": "",
+    "dependencies": [""]
+}

@@ -1,0 +1,5 @@
+context: Selection
+layout:
+  - Approve
+  - Pending
+  - Reject
