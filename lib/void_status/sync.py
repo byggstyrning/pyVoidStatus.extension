@@ -393,7 +393,7 @@ def synchronize_from_link(host_doc, link_info, config, selected_codes, separator
         host_element, method = find_host_match(link_element, host_index)
         if host_element is None:
             result["unmatched"] += 1
-            log_warning(
+            log_debug(
                 "Unmatched linked opening {}".format(element_label(link_element))
             )
             result["unmatched_items"].append(

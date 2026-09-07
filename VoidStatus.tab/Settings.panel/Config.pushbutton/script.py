@@ -319,7 +319,7 @@ class VoidStatusSettingsWindow(forms.WPFWindow):
             return
         log_info("Bind UI result added={} already={}".format(added, already))
         forms.alert(
-            "Added {} parameter(s). {} already present in the project.".format(
+            "Added or repaired {} parameter(s). {} already fully bound.".format(
                 added, already
             ),
             title="Void Status",

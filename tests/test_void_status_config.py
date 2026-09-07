@@ -133,12 +133,14 @@ def test_sync_moves_code_when_linked_rejected():
 
 
 def test_match_guids_match_bundled_shared_params():
-    from void_status.constants import MATCH_KEY, OBJECT_ID
+    from void_status.constants import MATCH_KEY, OBJECT_ID, PARAM_BY_KEY
 
     assert MATCH_KEY["guid"] == "2e9bc4c8-bf25-4700-b8ee-14294918ffa6"
     assert MATCH_KEY["name"] == "MatchKey"
     assert OBJECT_ID["guid"] == "b0b57893-462a-4872-93d9-741a29c5e4fc"
     assert OBJECT_ID["name"] == "ObjectId"
+    assert PARAM_BY_KEY["chat_log"]["guid"] == "09b9ba26-7e8f-4a91-8ce2-80f22244f2b5"
+    assert PARAM_BY_KEY["chat_log"]["name"] == "Chat Log"
 
 
 def test_identity_values_cross_match_adopted_opening():

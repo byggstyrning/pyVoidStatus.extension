@@ -188,33 +188,6 @@ class SyncApprovalsWindow(forms.WPFWindow):
                 result["skipped"],
             )
         )
-        extra = ""
-        items = result.get("unmatched_items") or []
-        if items:
-            lines = []
-            for item in items[:8]:
-                keys = item.get("keys") or []
-                if keys:
-                    lines.append(
-                        "  {} ({})".format(item.get("label"), ", ".join(keys[:3]))
-                    )
-                else:
-                    lines.append("  {}".format(item.get("label")))
-            extra = "\n\nNo identity match:\n" + "\n".join(lines)
-        forms.alert(
-            "Synced {} from {}.\n\n"
-            "Updated: {}\nAlready in sync: {}\nNo matching opening: {}\n"
-            "Linked openings without those codes: {}{}".format(
-                ", ".join(result["selected"]),
-                link["name"],
-                result["updated"],
-                result["unchanged"],
-                result["unmatched"],
-                result["skipped"],
-                extra,
-            ),
-            title="Void Status",
-        )
         if self._fixed_link:
             self.Close()
 

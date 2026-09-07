@@ -83,7 +83,7 @@
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBlock Grid.Column="0" TextWrapping="Wrap" VerticalAlignment="Center" FontSize="12" Foreground="#444444"
-                                       Text="Add the status parameters to this project if they are missing. Existing bindings are left unchanged."/>
+                                       Text="Add or repair status parameters (including Chat Log) on the selected categories. Incomplete bindings are expanded."/>
                             <Button x:Name="ensureParamsButton" Grid.Column="1" Content="Ensure parameters" Width="150" Height="28" Margin="12,0,0,0" Click="ensure_params_click"/>
                         </Grid>
                     </Grid>

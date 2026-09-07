@@ -55,6 +55,13 @@ STATUS_PARAMETERS = (
         "user_modifiable": False,
         "description": "User or team responsible for reviewing the element.",
     },
+    {
+        "key": "chat_log",
+        "guid": "09b9ba26-7e8f-4a91-8ce2-80f22244f2b5",
+        "name": "Chat Log",
+        "user_modifiable": True,
+        "description": "Saves the chat into a readable format.",
+    },
 )
 
 PARAM_BY_KEY = dict((item["key"], item) for item in STATUS_PARAMETERS)
@@ -162,6 +169,7 @@ DEFAULT_XML = """<?xml version="1.0" encoding="utf-8"?>
     <Parameter key="rejected_by" guid="b01b41a7-973e-48fd-8816-163f7a33a7a7" name="Rejected by" />
     <Parameter key="pending_by" guid="962ca537-282e-42a1-b77c-c959957efb99" name="Pending by" />
     <Parameter key="assigned_to" guid="1035d1b3-baff-4446-94c5-312404c3d845" name="Assigned to" />
+    <Parameter key="chat_log" guid="09b9ba26-7e8f-4a91-8ce2-80f22244f2b5" name="Chat Log" />
   </Parameters>
   <Categories>
     <Category>OST_GenericModel</Category>

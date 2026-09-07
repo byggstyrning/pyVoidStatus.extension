@@ -16,7 +16,7 @@ pyRevit extension for void approval. Select openings and stamp **Approved by**, 
 3. Open a project → **Add-Ins** → **Void Status** → **Config**.
 4. Set **Name** (this workstation) and **Discipline** (stored for you in this Revit file). The same person can use STR in one model and FP in another.
 5. Optionally edit **this model** settings (discipline codes, bind categories). **Save** writes them into the Revit file, so colleagues share them. Import / Export under **Advanced** is only if you need to copy settings between models.
-6. Click **Ensure parameters** if the shared parameters are not already in the project (existing bindings are left unchanged).
+6. Click **Ensure parameters** if the shared parameters are missing or not bound on the selected categories. Incomplete bindings (for example Chat Log present only on a family) are repaired.
 
 ## Shared parameters
 
@@ -31,6 +31,7 @@ Bundled in `shared_params/VoidStatus.txt`:
 | Rejected by | `b01b41a7-973e-48fd-8816-163f7a33a7a7` |
 | Pending by | `962ca537-282e-42a1-b77c-c959957efb99` |
 | Assigned to | `1035d1b3-baff-4446-94c5-312404c3d845` |
+| Chat Log | `09b9ba26-7e8f-4a91-8ce2-80f22244f2b5` |
 
 Approve / Pending / Reject look up parameters by GUID first, then by name, so they work on openings that already have these parameters.
 
