@@ -2,12 +2,12 @@
 """
 Startup script for the Void Status extension.
 
-pyRevit still builds a Void Status tab (needed as the clone source for
-Approve / Pending / Reject). At runtime we:
+Buttons are built on the existing pyRevit tab (not a new tab — hiding a
+custom tab makes the next Reload fail with "Unexpected tab"). At runtime we:
 
 - Copy Config / Reset / Sync onto Revit's Add-Ins tab
 - Copy Approve / Pending / Reject onto the Modify tab (MMI pattern)
-- Hide the extra Void Status tab so it does not use a ribbon slot
+- Hide those source panels so they do not stay on the pyRevit tab
 """
 
 import clr
@@ -23,11 +23,12 @@ from void_status.logutil import log_debug, log_info, log_warning, log_exception
 
 script_logger = logger.get_logger("pyVoidStatus_startup")
 
-SOURCE_TAB_TITLE = "Void Status"
-SETTINGS_PANEL_TITLE = "Settings"
+SETTINGS_PANEL_TITLE = "Void Status Settings"
 STATUS_PANEL_TITLE = "Void Status"
 ADDINS_PANEL_TITLE = "Void Status"
+_LEGACY_TAB_TITLE = "Void Status"
 
+_PYREVIT_TITLES = ("pyrevit", "pyrv")
 _ADDINS_TITLES = ("add-ins", "addins", "add-in", "tillägg")
 _MODIFY_TITLES = ("modify", "ändra")
 
@@ -51,8 +52,20 @@ def _is_modify_tab(tab):
     return _norm(tab.Title) in _MODIFY_TITLES
 
 
-def _is_source_tab(tab):
-    return _norm(tab.Title) == _norm(SOURCE_TAB_TITLE) and not _is_addins_tab(tab)
+def _is_pyrevit_tab(tab):
+    if _norm(tab.Title) in _PYREVIT_TITLES:
+        return True
+    try:
+        if _norm(str(tab.Id or "")) in _PYREVIT_TITLES:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _is_legacy_tab(tab):
+    """Old builds created a dedicated Void Status tab and then hid it."""
+    return _norm(tab.Title) == _norm(_LEGACY_TAB_TITLE) and not _is_addins_tab(tab)
 
 
 def _panel_title(panel):
@@ -86,9 +99,9 @@ def _find_tab(ribbon, predicate, visible_only=False):
 
 
 def _find_source_panel(ribbon, panel_title):
-    """Find a panel on the pyRevit source tab, including when that tab is hidden."""
+    """Find a panel on the pyRevit tab, including when that panel is hidden."""
     for tab in ribbon.Tabs:
-        if not _is_source_tab(tab):
+        if not _is_pyrevit_tab(tab):
             continue
         for panel in tab.Panels:
             if _panel_title(panel) == panel_title:
@@ -108,19 +121,33 @@ def _clone_panel(source_panel, dest_tab, dest_title):
     return True
 
 
-def _hide_source_tab(ribbon):
-    source_tab = _find_tab(ribbon, _is_source_tab, visible_only=False)
-    if not source_tab:
+def _hide_panel(panel):
+    if not panel:
         return False
-    if not source_tab.IsVisible:
+    try:
+        if not panel.IsVisible:
+            return True
+        panel.IsVisible = False
         return True
-    source_tab.IsVisible = False
-    log_info("Hid extra ribbon tab '{}'".format(SOURCE_TAB_TITLE))
-    return True
+    except Exception as ex:
+        log_debug("Could not hide panel '{}': {}".format(_panel_title(panel), ex))
+        return False
+
+
+def _remove_legacy_tab(ribbon):
+    """Drop a leftover Void Status tab from older builds."""
+    legacy = _find_tab(ribbon, _is_legacy_tab, visible_only=False)
+    if not legacy:
+        return
+    try:
+        ribbon.Tabs.Remove(legacy)
+        log_info("Removed leftover '{}' ribbon tab".format(_LEGACY_TAB_TITLE))
+    except Exception as ex:
+        log_debug("Could not remove leftover tab: {}".format(ex))
 
 
 def place_void_status_panels():
-    """Copy panels onto Add-Ins / Modify and hide the extra tab.
+    """Copy panels onto Add-Ins / Modify and hide the pyRevit source panels.
 
     Returns True when Add-Ins settings are in place. Modify clone is best-effort
     until Revit shows the contextual Modify tab.
@@ -131,6 +158,7 @@ def place_void_status_panels():
         return False
 
     addins_ok = False
+    settings_panel = None
     try:
         addins_tab = _find_tab(ribbon, _is_addins_tab, visible_only=False)
         settings_panel, _settings_tab = _find_source_panel(ribbon, SETTINGS_PANEL_TITLE)
@@ -147,20 +175,26 @@ def place_void_status_panels():
     except Exception as ex:
         log_exception("Failed to place Void Status on Add-Ins", ex)
 
+    status_panel = None
+    modify_ok = False
     try:
         modify_tab = _find_tab(ribbon, _is_modify_tab, visible_only=True)
         status_panel, _status_tab = _find_source_panel(ribbon, STATUS_PANEL_TITLE)
-        if modify_tab and status_panel and not _tab_has_panel(modify_tab, STATUS_PANEL_TITLE):
+        if modify_tab and _tab_has_panel(modify_tab, STATUS_PANEL_TITLE):
+            modify_ok = True
+        elif modify_tab and status_panel:
             _clone_panel(status_panel, modify_tab, STATUS_PANEL_TITLE)
+            modify_ok = True
             log_info("Cloned '{}' onto Modify".format(STATUS_PANEL_TITLE))
     except Exception as ex:
         log_exception("Failed to clone '{}' onto Modify".format(STATUS_PANEL_TITLE), ex)
 
+    if addins_ok and settings_panel:
+        _hide_panel(settings_panel)
+    if modify_ok and status_panel:
+        _hide_panel(status_panel)
     if addins_ok:
-        try:
-            _hide_source_tab(ribbon)
-        except Exception as ex:
-            log_debug("Could not hide source tab: {}".format(ex))
+        _remove_legacy_tab(ribbon)
 
     return addins_ok
 
