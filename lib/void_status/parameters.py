@@ -1,14 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Look up shared parameters on elements by GUID, then name."""
+"""Look up shared parameters on elements by GUID, then by name."""
 
 import System
 from Autodesk.Revit.DB import StorageType
-from pyrevit import script
 
 from void_status.logutil import log_debug, log_warning, element_label
-
-logger = script.get_logger()
-
 
 _GUID_CACHE = {}
 
@@ -32,7 +28,7 @@ def as_guid(guid_value):
 
 
 def get_parameter(element, guid=None, name=None):
-    """Find a parameter on an element by shared-parameter GUID, then by name."""
+    """Find a parameter by shared-parameter GUID, then by name."""
     if element is None:
         return None
 
@@ -44,7 +40,6 @@ def get_parameter(element, guid=None, name=None):
                 return param
         except Exception as ex:
             log_debug("get_Parameter(guid={}) failed: {}".format(guid, ex))
-            logger.debug("get_Parameter(guid) failed: {}".format(ex))
 
     if name:
         try:
@@ -58,12 +53,11 @@ def get_parameter(element, guid=None, name=None):
                 return param
         except Exception as ex:
             log_debug("LookupParameter({}) failed: {}".format(name, ex))
-            logger.debug("LookupParameter({}) failed: {}".format(name, ex))
     return None
 
 
 def param_as_string(param):
-    """Read a Parameter that was already resolved. Avoids a second lookup."""
+    """Read a parameter that was already resolved."""
     if not param:
         return ""
     try:
@@ -76,28 +70,27 @@ def param_as_string(param):
 
 
 def get_string_value(element, guid=None, name=None):
-    """Return the string value of a parameter, or empty string."""
+    """Return the string value of a parameter, or an empty string."""
     return param_as_string(get_parameter(element, guid=guid, name=name))
+
+
+def _param_name(param):
+    try:
+        return param.Definition.Name
+    except Exception:
+        return "?"
 
 
 def set_string_value(param, value):
     """Set a string parameter. Returns True on success."""
     if param is None or param.IsReadOnly:
         if param is not None:
-            try:
-                pname = param.Definition.Name
-            except Exception:
-                pname = "?"
-            log_warning("Cannot set read-only or missing parameter {}".format(pname))
+            log_warning("Cannot set read-only or missing parameter {}".format(_param_name(param)))
         return False
     if param.StorageType != StorageType.String:
-        try:
-            pname = param.Definition.Name
-        except Exception:
-            pname = "?"
         log_warning(
             "Cannot set {} — StorageType is {}, expected String".format(
-                pname, param.StorageType
+                _param_name(param), param.StorageType
             )
         )
         return False
@@ -109,5 +102,4 @@ def set_string_value(param, value):
         return True
     except Exception as ex:
         log_warning("Failed to set parameter: {}".format(ex))
-        logger.debug("Failed to set parameter: {}".format(ex))
         return False

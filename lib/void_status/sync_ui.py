@@ -14,9 +14,9 @@ from System.Windows import Thickness
 from System.Windows.Controls import CheckBox
 
 from void_status.storage import load_config_xml
-from void_status.config_xml import parse_config_xml
+from void_status.config import parse_config_xml
 from void_status.profile import load_profile
-from void_status.constants import canonical_discipline_code
+from void_status.contract import canonical_discipline_code
 from void_status.sync import (
     list_loaded_links,
     collect_link_disciplines,

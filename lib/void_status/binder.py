@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
-"""Bind bundled shared parameters as project parameters."""
+"""Bind bundled shared parameters as instance project parameters."""
 
+import os.path as op
 import System
 from Autodesk.Revit.DB import (
     BuiltInCategory,
@@ -8,13 +9,10 @@ from Autodesk.Revit.DB import (
     SharedParameterElement,
     Transaction,
 )
-from pyrevit import script
 
-from void_status.constants import STATUS_PARAMETERS
+from void_status.contract import STATUS_PARAMETERS
 from void_status.paths import shared_parameter_file, local_bundle_file
 from void_status.logutil import log_debug, log_info, log_warning, log_error, log_exception
-
-logger = script.get_logger()
 
 
 def _param_group():
@@ -32,8 +30,20 @@ def _param_group():
 def _guid_text(value):
     text = str(value or "").lower().strip()
     if text.startswith("{") and text.endswith("}"):
-        text = text[1:-1]
+        return text[1:-1]
     return text
+
+
+def _category_id_value(category):
+    try:
+        if hasattr(category.Id, "Value"):
+            return int(category.Id.Value)
+    except Exception:
+        pass
+    try:
+        return int(category.Id.IntegerValue)
+    except Exception:
+        return None
 
 
 def _category_set(doc, app, category_names):
@@ -46,7 +56,7 @@ def _category_set(doc, app, category_names):
             if cat and cat.AllowsBoundParameters:
                 cats.Insert(cat)
         except Exception as ex:
-            logger.debug("Skip category {}: {}".format(name, ex))
+            log_debug("Skip category {}: {}".format(name, ex))
     return cats
 
 
@@ -56,17 +66,15 @@ def _category_ids(category_set):
         return ids
     try:
         for cat in category_set:
-            try:
-                ids.add(int(cat.Id.IntegerValue))
-            except Exception:
-                continue
+            value = _category_id_value(cat)
+            if value is not None:
+                ids.add(value)
     except Exception:
         pass
     return ids
 
 
 def _shared_param_element(doc, guid_lower):
-    """Return SharedParameterElement for GUID, or None."""
     try:
         spe = SharedParameterElement.Lookup(doc, System.Guid(guid_lower))
         if spe is not None:
@@ -100,16 +108,16 @@ def _binding_for_guid(doc, guid_lower):
                 )
             )
 
-    it = doc.ParameterBindings.ForwardIterator()
-    it.Reset()
-    while it.MoveNext():
-        definition = it.Key
+    iterator = doc.ParameterBindings.ForwardIterator()
+    iterator.Reset()
+    while iterator.MoveNext():
+        definition = iterator.Key
         try:
             def_guid = _guid_text(definition.GUID)
         except Exception:
             continue
         if def_guid == guid_lower:
-            return definition, it.Current
+            return definition, iterator.Current
     return None, None
 
 
@@ -136,7 +144,6 @@ def _definition_count(def_file):
 
 
 def _insert_or_reinsert(doc, definition, binding, group_id, reinsert):
-    """Insert or ReInsert a project-parameter binding. Return True on success."""
     if group_id is not None:
         try:
             if reinsert:
@@ -150,50 +157,62 @@ def _insert_or_reinsert(doc, definition, binding, group_id, reinsert):
 
 
 def _bind_definition(doc, definition, binding, group_id, item_name):
-    """Insert, falling back to ReInsert when the param was bound before.
-
-    Revit returns False from Insert if the parameter was ever bound in the
-    project (even after delete). ReInsert is the documented recovery path.
-    """
-    inserted = _insert_or_reinsert(
-        doc, definition, binding, group_id, reinsert=False
-    )
-    if inserted:
+    """Insert, then ReInsert when the parameter was bound in this project before."""
+    if _insert_or_reinsert(doc, definition, binding, group_id, reinsert=False):
         log_info("Bound {}".format(item_name))
         return "added"
-
-    log_debug(
-        "Insert returned False for {}; trying ReInsert".format(item_name)
-    )
-    updated = _insert_or_reinsert(
-        doc, definition, binding, group_id, reinsert=True
-    )
-    if updated:
+    log_debug("Insert returned False for {}; trying ReInsert".format(item_name))
+    if _insert_or_reinsert(doc, definition, binding, group_id, reinsert=True):
         log_info("Rebound {}".format(item_name))
         return "added"
-
     bound_def, bound = _binding_for_guid(doc, _guid_text(definition.GUID))
     if bound_def is not None and bound is not None:
-        log_info(
-            "Already bound after Insert/ReInsert False: {}".format(item_name)
-        )
+        log_info("Already bound after Insert/ReInsert False: {}".format(item_name))
         return "already"
-
     log_warning(
-        "Could not bind {} (Insert and ReInsert both returned False)".format(
-            item_name
-        )
+        "Could not bind {} (Insert and ReInsert both returned False)".format(item_name)
     )
     return "failed"
 
 
-def ensure_shared_parameters(doc, category_names, start_path):
-    """Add or repair missing shared parameters as instance project parameters.
+def _merge_categories(app, existing_cats, cat_set):
+    merged = app.Create.NewCategorySet()
+    if existing_cats is not None:
+        for cat in existing_cats:
+            try:
+                merged.Insert(cat)
+            except Exception:
+                continue
+    for cat in cat_set:
+        try:
+            merged.Insert(cat)
+        except Exception:
+            continue
+    return merged
 
-    A GUID that only exists on loaded families (SharedParameterElement) is not
-    enough — we require a project binding that covers the configured categories.
-    Incomplete bindings are expanded with ReInsert. Insert False falls back to
-    ReInsert (common for ConVoid params already used in the project).
+
+def _open_definition_file(app, sp_path):
+    def_file = app.OpenSharedParameterFile()
+    if def_file is None:
+        log_error("Revit could not open shared parameter file {}".format(sp_path))
+        return None, "Revit could not open the shared parameter file."
+    found = _definition_count(def_file)
+    log_info("Shared parameter file definitions: {}".format(found))
+    if found == 0:
+        log_error("Shared parameter file opened but has no definitions")
+        return None, (
+            "Shared parameter file opened with no definitions.\n"
+            "Check that VoidStatus.txt is ANSI/UTF-8 (not UTF-16 without BOM)."
+        )
+    return def_file, None
+
+
+def ensure_shared_parameters(doc, category_names, start_path):
+    """Add or repair shared parameters as instance project parameters.
+
+    A GUID that only exists on a loaded family is not enough. The project
+    binding must cover the configured categories. Incomplete bindings are
+    expanded with ReInsert.
 
     Returns (added_count, already_present_count, error_message).
     ``added_count`` includes new inserts and repaired bindings.
@@ -207,8 +226,6 @@ def ensure_shared_parameters(doc, category_names, start_path):
     if not sp_path:
         log_error("Bundled shared parameter file not located")
         return 0, 0, "Could not locate the bundled shared parameter file."
-
-    import os.path as op
     if not op.isfile(sp_path):
         log_error("Shared parameter file missing: {}".format(sp_path))
         return 0, 0, "Shared parameter file not found:\n{}".format(sp_path)
@@ -217,7 +234,6 @@ def ensure_shared_parameters(doc, category_names, start_path):
         sp_path = local_bundle_file(sp_path)
     except Exception as ex:
         log_warning("Could not cache shared parameter file: {}".format(ex))
-
     log_info("Shared parameter file: {}".format(sp_path))
 
     app = doc.Application
@@ -230,21 +246,9 @@ def ensure_shared_parameters(doc, category_names, start_path):
     already = 0
     try:
         app.SharedParametersFilename = sp_path
-        def_file = app.OpenSharedParameterFile()
-        if def_file is None:
-            log_error("Revit could not open shared parameter file {}".format(sp_path))
-            return 0, 0, "Revit could not open the shared parameter file."
-
-        found = _definition_count(def_file)
-        log_info("Shared parameter file definitions: {}".format(found))
-        if found == 0:
-            log_error("Shared parameter file opened but has no definitions")
-            return (
-                0,
-                0,
-                "Shared parameter file opened with no definitions.\n"
-                "Check that VoidStatus.txt is ANSI/UTF-8 (not UTF-16 without BOM).",
-            )
+        def_file, error = _open_definition_file(app, sp_path)
+        if error:
+            return 0, 0, error
 
         cat_set = _category_set(doc, app, category_names)
         log_info("Category set size for binding: {}".format(cat_set.Size))
@@ -255,7 +259,6 @@ def ensure_shared_parameters(doc, category_names, start_path):
         wanted_cat_ids = _category_ids(cat_set)
         to_insert = []
         to_reinsert = []
-
         for guid, item in wanted.items():
             bound_def, bound = _binding_for_guid(doc, guid)
             if bound_def is None or bound is None:
@@ -266,14 +269,9 @@ def ensure_shared_parameters(doc, category_names, start_path):
                             item["name"], guid
                         )
                     )
-                    return (
-                        added,
-                        already,
-                        "Shared parameter file is missing {}.".format(item["name"]),
-                    )
+                    return added, already, "Shared parameter file is missing {}.".format(item["name"])
                 to_insert.append((definition, item))
-                spe = _shared_param_element(doc, guid)
-                if spe is not None:
+                if _shared_param_element(doc, guid) is not None:
                     log_info(
                         "Will bind (SharedParameterElement exists, no project "
                         "binding yet): {} ({})".format(item["name"], guid)
@@ -286,22 +284,11 @@ def ensure_shared_parameters(doc, category_names, start_path):
                 existing_cats = bound.Categories
             except Exception:
                 existing_cats = None
-            existing_ids = _category_ids(existing_cats)
-            missing = wanted_cat_ids - existing_ids
+            missing = wanted_cat_ids - _category_ids(existing_cats)
             if missing:
-                merged = app.Create.NewCategorySet()
-                if existing_cats is not None:
-                    for cat in existing_cats:
-                        try:
-                            merged.Insert(cat)
-                        except Exception:
-                            continue
-                for cat in cat_set:
-                    try:
-                        merged.Insert(cat)
-                    except Exception:
-                        continue
-                to_reinsert.append((bound_def, merged, item))
+                to_reinsert.append(
+                    (bound_def, _merge_categories(app, existing_cats, cat_set), item)
+                )
                 log_info(
                     "Will repair binding categories for {} (missing {})".format(
                         item["name"], len(missing)
@@ -312,42 +299,31 @@ def ensure_shared_parameters(doc, category_names, start_path):
                 log_debug("Already bound: {} ({})".format(item["name"], guid))
 
         if not to_insert and not to_reinsert:
-            log_info(
-                "Nothing to bind; {} status parameters already present".format(already)
-            )
+            log_info("Nothing to bind; {} status parameters already present".format(already))
             return 0, already, None
 
         binding = app.Create.NewInstanceBinding(cat_set)
-        t = Transaction(doc, "Bind Void Status shared parameters")
-        t.Start()
+        transaction = Transaction(doc, "Bind Void Status shared parameters")
+        transaction.Start()
         try:
             for definition, item in to_insert:
-                result = _bind_definition(
-                    doc, definition, binding, group_id, item["name"]
-                )
+                result = _bind_definition(doc, definition, binding, group_id, item["name"])
                 if result == "added":
                     added += 1
                 elif result == "already":
                     already += 1
-
             for definition, merged_cats, item in to_reinsert:
                 repaired = app.Create.NewInstanceBinding(merged_cats)
-                updated = _insert_or_reinsert(
-                    doc, definition, repaired, group_id, reinsert=True
-                )
-                if updated:
+                if _insert_or_reinsert(doc, definition, repaired, group_id, reinsert=True):
                     added += 1
                     log_info("Repaired binding for {}".format(item["name"]))
                 else:
-                    log_warning(
-                        "Binding.ReInsert returned False for {}".format(item["name"])
-                    )
-
-            t.Commit()
+                    log_warning("Binding.ReInsert returned False for {}".format(item["name"]))
+            transaction.Commit()
             log_info("Bind transaction committed")
         except Exception as ex:
-            if t.HasStarted() and not t.HasEnded():
-                t.RollBack()
+            if transaction.HasStarted() and not transaction.HasEnded():
+                transaction.RollBack()
                 log_warning("Bind transaction rolled back")
             log_exception("Bind shared parameters failed", ex)
             return added, already, str(ex)

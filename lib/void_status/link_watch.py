@@ -44,6 +44,10 @@ _synced_handler = None
 _reloading_handler = None
 _reloaded_handler = None
 
+# Same session store as startup.py: a reload re-executes this module, so the
+# in-module handler variables are gone while the old .NET delegates remain.
+_LINK_ENV = "pyvoidstatus.link_watch_handlers"
+
 
 def _type_id_value(element_id):
     try:
@@ -209,13 +213,74 @@ def _on_reloaded_latest(sender, args):
     _clear_pending("after reload latest")
 
 
+def _link_handler_store():
+    from pyrevit.coreutils import envvars
+    stored = envvars.get_pyrevit_env_var(_LINK_ENV)
+    if not isinstance(stored, dict):
+        stored = {}
+        envvars.set_pyrevit_env_var(_LINK_ENV, stored)
+    return stored
+
+
+def _detach_stored(event_name, handler):
+    if handler is None:
+        return
+    try:
+        if event_name == "Idling":
+            HOST_APP.uiapp.Idling -= handler
+        elif event_name == "DocumentChanged":
+            HOST_APP.app.DocumentChanged -= handler
+        elif event_name == "DocumentSynchronizingWithCentral":
+            HOST_APP.app.DocumentSynchronizingWithCentral -= handler
+        elif event_name == "DocumentSynchronizedWithCentral":
+            HOST_APP.app.DocumentSynchronizedWithCentral -= handler
+        elif event_name == "DocumentReloadingLatest":
+            HOST_APP.app.DocumentReloadingLatest -= handler
+        elif event_name == "DocumentReloadedLatest":
+            HOST_APP.app.DocumentReloadedLatest -= handler
+    except Exception as ex:
+        log_debug("Could not unsubscribe stored {}: {}".format(event_name, ex))
+
+
+def _remember_handler(event_name, handler):
+    stored = _link_handler_store()
+    previous = stored.get(event_name)
+    if previous is not None and previous is not handler:
+        _detach_stored(event_name, previous)
+    stored[event_name] = handler
+
+
+def _forget_handler(event_name):
+    stored = _link_handler_store()
+    handler = stored.get(event_name)
+    if handler is None:
+        return None
+    stored[event_name] = None
+    return handler
+
+
+def _drop_previous_module_handlers():
+    """Detach delegates left by the previous copy of this module."""
+    stored = _link_handler_store()
+    for event_name in list(stored.keys()):
+        handler = stored.get(event_name)
+        if handler is None:
+            continue
+        _detach_stored(event_name, handler)
+        stored[event_name] = None
+
+
 def _arm_idling():
     global _idling_armed, _idling_handler
     if _idling_armed:
         return
     try:
+        previous = _forget_handler("Idling")
+        if previous is not None:
+            _detach_stored("Idling", previous)
         _idling_handler = EventHandler[UIEvents.IdlingEventArgs](_on_idling)
         HOST_APP.uiapp.Idling += _idling_handler
+        _remember_handler("Idling", _idling_handler)
         _idling_armed = True
     except Exception as ex:
         log_exception("Could not arm Idling for link-reload prompt", ex)
@@ -223,13 +288,17 @@ def _arm_idling():
 
 def _disarm_idling():
     global _idling_armed, _idling_handler
-    if not _idling_armed or _idling_handler is None:
+    stored = _forget_handler("Idling")
+    handler = _idling_handler or stored
+    if not _idling_armed and handler is None:
         _idling_armed = False
         return
-    try:
-        HOST_APP.uiapp.Idling -= _idling_handler
-    except Exception as ex:
-        log_debug("Could not unsubscribe link-reload Idling: {}".format(ex))
+    if handler is not None:
+        try:
+            HOST_APP.uiapp.Idling -= handler
+        except Exception as ex:
+            log_debug("Could not unsubscribe link-reload Idling: {}".format(ex))
+    _idling_handler = None
     _idling_armed = False
 
 
@@ -247,7 +316,7 @@ def _on_idling(sender, args):
     _prompting = True
     try:
         from void_status.storage import load_config_xml
-        from void_status.config_xml import parse_config_xml
+        from void_status.config import parse_config_xml
         from void_status.sync import collect_link_disciplines
         from void_status.sync_ui import show_sync_window
 
@@ -282,6 +351,7 @@ def _on_idling(sender, args):
                         info.get("name"), ex
                     )
                 )
+                _alert_scan_failed(info.get("name"), ex)
                 continue
 
             if not rows:
@@ -300,8 +370,28 @@ def _on_idling(sender, args):
             show_sync_window(doc, fixed_link=info)
     except Exception as ex:
         log_exception("Link-reload sync prompt failed", ex)
+        _alert_scan_failed(None, ex)
     finally:
         _prompting = False
+
+
+def _alert_scan_failed(link_name, ex):
+    """Tell the user a reload scan failed. The log line is easy to miss."""
+    try:
+        from pyrevit import forms
+        if link_name:
+            message = (
+                "Could not read statuses from reloaded link '{}'.\n\n{}".format(
+                    link_name, ex
+                )
+            )
+        else:
+            message = "Could not open Void Status sync after a link reload.\n\n{}".format(
+                ex
+            )
+        forms.alert(message, title="Void Status")
+    except Exception as alert_ex:
+        log_debug("Could not show link-reload alert: {}".format(alert_ex))
 
 
 def mark_document_opening():
@@ -327,9 +417,20 @@ def _subscribe_app_event(attr_name, handler_attr, callback, event_args_type):
         return
     try:
         handler = EventHandler[event_args_type](callback)
-        getattr(app, attr_name).__iadd__(handler)
+        if attr_name == "DocumentSynchronizingWithCentral":
+            app.DocumentSynchronizingWithCentral += handler
+        elif attr_name == "DocumentSynchronizedWithCentral":
+            app.DocumentSynchronizedWithCentral += handler
+        elif attr_name == "DocumentReloadingLatest":
+            app.DocumentReloadingLatest += handler
+        elif attr_name == "DocumentReloadedLatest":
+            app.DocumentReloadedLatest += handler
+        else:
+            log_debug("Unhandled application event {}".format(attr_name))
+            return
         global_dict[handler_attr] = handler
         _handlers.append(handler)
+        _remember_handler(attr_name, handler)
         log_info("Subscribed to {}".format(attr_name))
     except Exception as ex:
         log_debug("Could not subscribe to {}: {}".format(attr_name, ex))
@@ -337,16 +438,18 @@ def _subscribe_app_event(attr_name, handler_attr, callback, event_args_type):
 
 
 def subscribe():
-    """Subscribe once from startup.py. Safe to call again."""
+    """Subscribe once from startup.py. Safe to call again after a reload."""
     global _doc_changed_handler
     if _doc_changed_handler is not None:
         return
+    _drop_previous_module_handlers()
     try:
         _doc_changed_handler = EventHandler[Events.DocumentChangedEventArgs](
             _on_document_changed
         )
         HOST_APP.app.DocumentChanged += _doc_changed_handler
         _handlers.append(_doc_changed_handler)
+        _remember_handler("DocumentChanged", _doc_changed_handler)
         log_info("Subscribed to DocumentChanged for Revit link reloads")
     except Exception as ex:
         log_exception("Could not subscribe to DocumentChanged", ex)

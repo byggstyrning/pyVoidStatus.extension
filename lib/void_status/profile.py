@@ -8,15 +8,16 @@ user + model specific.
 
 from pyrevit import script, HOST_APP
 from pyrevit.userconfig import user_config
-from void_status.constants import canonical_discipline_code
+from void_status.contract import (
+    PROFILE_SECTION,
+    PROFILE_NAME_KEY,
+    PROFILE_DISCIPLINE_KEY,
+    canonical_discipline_code,
+)
 from void_status.storage import _doc_key, load_user_discipline, save_user_discipline
-from void_status.logutil import log_debug, log_info, log_exception
+from void_status.logutil import log_debug, log_info, log_warning, log_exception
 
 logger = script.get_logger()
-
-CONFIG_SECTION = "VoidStatus"
-KEY_NAME = "profile_name"
-KEY_DISCIPLINE = "profile_discipline"
 
 _profile_cache = {}
 
@@ -33,18 +34,18 @@ def current_user_key():
 
 
 def _section():
-    if not hasattr(user_config, CONFIG_SECTION):
-        log_info("Creating user_config section {!r}".format(CONFIG_SECTION))
-        user_config.add_section(CONFIG_SECTION)
-    return getattr(user_config, CONFIG_SECTION)
+    if not hasattr(user_config, PROFILE_SECTION):
+        log_info("Creating user_config section {!r}".format(PROFILE_SECTION))
+        user_config.add_section(PROFILE_SECTION)
+    return getattr(user_config, PROFILE_SECTION)
 
 
 def _load_local_name_and_legacy_discipline():
     """Workstation name, plus leftover machine-wide discipline for migration."""
     try:
         section = _section()
-        name = section.get_option(KEY_NAME, default_value="") or ""
-        raw = section.get_option(KEY_DISCIPLINE, default_value="") or ""
+        name = section.get_option(PROFILE_NAME_KEY, default_value="") or ""
+        raw = section.get_option(PROFILE_DISCIPLINE_KEY, default_value="") or ""
         return name, canonical_discipline_code(raw)
     except Exception as ex:
         log_exception("Error loading Void Status workstation profile", ex)
@@ -88,14 +89,14 @@ def save_profile(name, discipline, doc=None):
     try:
         canon = canonical_discipline_code(discipline)
         section = _section()
-        section.set_option(KEY_NAME, name or "")
+        section.set_option(PROFILE_NAME_KEY, name or "")
         if hasattr(section, "remove_option"):
             try:
-                section.remove_option(KEY_DISCIPLINE)
+                section.remove_option(PROFILE_DISCIPLINE_KEY)
             except Exception:
-                section.set_option(KEY_DISCIPLINE, "")
+                section.set_option(PROFILE_DISCIPLINE_KEY, "")
         else:
-            section.set_option(KEY_DISCIPLINE, "")
+            section.set_option(PROFILE_DISCIPLINE_KEY, "")
         user_config.save_changes()
 
         user = current_user_key()

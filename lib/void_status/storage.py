@@ -1,20 +1,20 @@
 # -*- coding: utf-8 -*-
-"""Read and write Void Status XML into the Revit project (DataStorage)."""
+"""Read and write Void Status settings on the project DataStorage element."""
 
 from Autodesk.Revit.DB import FilteredElementCollector, ExtensibleStorage
 from System.Collections.Generic import Dictionary, IDictionary
-from pyrevit import revit, script
+from pyrevit import revit
 
 from void_status.schema import VoidStatusSchema, VoidStatusUserSchema
-from void_status.constants import SCHEMA_VERSION, DEFAULT_XML
-from void_status.config_xml import parse_config_xml
+from void_status.contract import SCHEMA_VERSION, DEFAULT_XML
+from void_status.contract import FIELD_SCHEMA_VERSION, FIELD_CONFIG_XML, FIELD_DISCIPLINE_BY_USER
+from void_status.config import parse_config_xml
 from void_status.logutil import log_debug, log_info, log_warning, log_error, log_exception
 
-logger = script.get_logger()
-
-# Session caches: Extensible Storage scan and XML parse dominate a single click.
+# Session caches. Scanning extensible storage and parsing XML dominate a click.
 _STORAGE_IDS = {}
 _PARSED = {}
+_XML_FALLBACK_ALERTED = set()
 
 
 def _doc_key(doc):
@@ -25,8 +25,12 @@ def _doc_key(doc):
 
 
 def _invalidate_doc(doc):
-    key = _doc_key(doc)
-    _PARSED.pop(key, None)
+    _PARSED.pop(_doc_key(doc), None)
+
+
+def _entity_matches(element, schema):
+    entity = element.GetEntity(schema)
+    return entity.IsValid() and entity.Schema.GUID == schema.GUID
 
 
 def find_storage(doc):
@@ -34,7 +38,6 @@ def find_storage(doc):
     schema = VoidStatusSchema.schema
     if not schema:
         log_error("Could not get VoidStatusSchema definition.")
-        logger.error("Could not get VoidStatusSchema definition.")
         return None
 
     key = _doc_key(doc)
@@ -42,31 +45,27 @@ def find_storage(doc):
     if cached_id is not None:
         try:
             existing = doc.GetElement(cached_id)
-            if existing:
-                entity = existing.GetEntity(schema)
-                if entity.IsValid() and entity.Schema.GUID == schema.GUID:
-                    return existing
+            if existing and _entity_matches(existing, schema):
+                return existing
         except Exception:
             pass
         _STORAGE_IDS.pop(key, None)
 
     collector = FilteredElementCollector(doc).OfClass(ExtensibleStorage.DataStorage)
-    for ds in collector:
+    for storage in collector:
         try:
-            entity = ds.GetEntity(schema)
-            if entity.IsValid() and entity.Schema.GUID == schema.GUID:
-                _STORAGE_IDS[key] = ds.Id
-                log_debug("Found Void Status storage element {}".format(ds.Id))
-                return ds
+            if _entity_matches(storage, schema):
+                _STORAGE_IDS[key] = storage.Id
+                log_debug("Found Void Status storage element {}".format(storage.Id))
+                return storage
         except Exception as ex:
             log_debug("Error checking Void Status storage: {}".format(ex))
-            continue
     log_debug("No existing Void Status DataStorage in this document")
     return None
 
 
 def get_or_create_storage(doc):
-    """Get existing or create new Void Status DataStorage in the document."""
+    """Get the existing DataStorage element, or create one with default XML."""
     existing = find_storage(doc)
     if existing:
         log_debug("Using existing Void Status storage {}".format(existing.Id))
@@ -78,24 +77,46 @@ def get_or_create_storage(doc):
         return None
 
     with revit.Transaction("Create Void Status Settings Storage", doc):
-        new_storage = ExtensibleStorage.DataStorage.Create(doc)
+        storage = ExtensibleStorage.DataStorage.Create(doc)
         entity = VoidStatusSchema.entity
-        entity.Set[str]("schema_version", SCHEMA_VERSION)
-        entity.Set[str]("config_xml", DEFAULT_XML)
-        new_storage.SetEntity(entity)
+        entity.Set[str](FIELD_SCHEMA_VERSION, SCHEMA_VERSION)
+        entity.Set[str](FIELD_CONFIG_XML, DEFAULT_XML)
+        storage.SetEntity(entity)
         user_entity = VoidStatusUserSchema.entity
         user_entity.Set[IDictionary[str, str]](
-            "discipline_by_user", Dictionary[str, str]()
+            FIELD_DISCIPLINE_BY_USER, Dictionary[str, str]()
         )
-        new_storage.SetEntity(user_entity)
-        _STORAGE_IDS[_doc_key(doc)] = new_storage.Id
-        log_info("Created Void Status storage (ElementId: {})".format(new_storage.Id))
-        logger.debug("Created Void Status storage (ElementId: {})".format(new_storage.Id))
-        return new_storage
+        storage.SetEntity(user_entity)
+        _STORAGE_IDS[_doc_key(doc)] = storage.Id
+        log_info("Created Void Status storage (ElementId: {})".format(storage.Id))
+        return storage
+
+
+def _alert_config_fallback(doc, message):
+    """Alert once per document when stored settings cannot be used."""
+    key = _doc_key(doc)
+    if key in _XML_FALLBACK_ALERTED:
+        log_warning(message)
+        return
+    _XML_FALLBACK_ALERTED.add(key)
+    log_warning(message)
+    try:
+        from pyrevit import forms
+        forms.alert(
+            "{}\n\nDefaults will be used until you save Config. "
+            "Saving replaces the stored settings.".format(message),
+            title="Void Status",
+        )
+    except Exception as ex:
+        log_debug("Could not show settings alert: {}".format(ex))
 
 
 def load_config_xml(doc):
-    """Load the project XML string. Returns the default XML if none is stored."""
+    """Load the project XML string. Missing storage returns the default quietly.
+
+    A read error or XML that will not parse alerts once, so Save does not
+    overwrite it unnoticed.
+    """
     storage = find_storage(doc)
     if not storage:
         log_info("No project XML stored — using default ({} chars)".format(len(DEFAULT_XML)))
@@ -104,20 +125,33 @@ def load_config_xml(doc):
     try:
         entity = storage.GetEntity(VoidStatusSchema.schema)
         if not entity.IsValid():
-            log_warning("Storage entity invalid — using default XML")
-            return DEFAULT_XML
-        xml_text = entity.Get[str]("config_xml")
-        if xml_text and xml_text.strip():
-            log_debug(
-                "Loaded project XML ({} chars) from storage {}".format(
-                    len(xml_text), storage.Id
-                )
+            _alert_config_fallback(
+                doc,
+                "Void Status settings in this model could not be read (invalid storage).",
             )
-            return xml_text
-        log_warning("Stored XML empty — using default")
+            return DEFAULT_XML
+        xml_text = entity.Get[str](FIELD_CONFIG_XML)
+        if not xml_text or not xml_text.strip():
+            log_warning("Stored XML empty — using default")
+            return DEFAULT_XML
+        try:
+            parse_config_xml(xml_text)
+        except ValueError as ex:
+            _alert_config_fallback(
+                doc,
+                "Void Status settings in this model could not be read.\n\n{}".format(ex),
+            )
+            return DEFAULT_XML
+        log_debug(
+            "Loaded project XML ({} chars) from storage {}".format(len(xml_text), storage.Id)
+        )
+        return xml_text
     except Exception as ex:
         log_exception("Error loading Void Status XML", ex)
-        logger.error("Error loading Void Status XML: {}".format(ex))
+        _alert_config_fallback(
+            doc,
+            "Void Status settings in this model could not be read.\n\n{}".format(ex),
+        )
     return DEFAULT_XML
 
 
@@ -128,16 +162,16 @@ def save_config_xml(doc, xml_text):
         log_error("Could not create Void Status project storage")
         raise RuntimeError("Could not create Void Status project storage.")
 
-    log_info("Saving project XML ({} chars) to storage {}".format(
-        len(xml_text or ""), storage.Id
-    ))
+    log_info(
+        "Saving project XML ({} chars) to storage {}".format(len(xml_text or ""), storage.Id)
+    )
     with revit.Transaction("Save Void Status Settings", doc):
         entity = storage.GetEntity(VoidStatusSchema.schema)
         if not entity.IsValid():
             log_debug("Replacing invalid storage entity")
             entity = VoidStatusSchema.entity
-        entity.Set[str]("schema_version", SCHEMA_VERSION)
-        entity.Set[str]("config_xml", xml_text)
+        entity.Set[str](FIELD_SCHEMA_VERSION, SCHEMA_VERSION)
+        entity.Set[str](FIELD_CONFIG_XML, xml_text)
         storage.SetEntity(entity)
     _invalidate_doc(doc)
     log_info("Project XML saved")
@@ -157,7 +191,7 @@ def load_config(doc):
 
 
 def _read_discipline_map(storage):
-    """Return a Python dict of username -> discipline from the user schema."""
+    """Return username -> discipline from the user schema."""
     schema = VoidStatusUserSchema.schema
     if not schema or not storage:
         return {}
@@ -165,7 +199,7 @@ def _read_discipline_map(storage):
         entity = storage.GetEntity(schema)
         if not entity.IsValid():
             return {}
-        mapping = entity.Get[IDictionary[str, str]]("discipline_by_user")
+        mapping = entity.Get[IDictionary[str, str]](FIELD_DISCIPLINE_BY_USER)
         if not mapping:
             return {}
         result = {}
@@ -178,7 +212,7 @@ def _read_discipline_map(storage):
 
 
 def load_user_discipline(doc, username):
-    """Discipline code for this Revit user in this model, or empty string."""
+    """Discipline code for this Revit user in this model, or an empty string."""
     if not doc or not username:
         return ""
     storage = find_storage(doc)
@@ -188,7 +222,7 @@ def load_user_discipline(doc, username):
 
 
 def save_user_discipline(doc, username, discipline):
-    """Store this Revit user's discipline in the model. Does not change others."""
+    """Store this Revit user's discipline in the model. Other users stay."""
     if not doc or not username:
         log_warning("Cannot save user discipline without a document and username")
         return False
@@ -213,7 +247,7 @@ def save_user_discipline(doc, username, discipline):
         entity = storage.GetEntity(schema)
         if not entity.IsValid():
             entity = VoidStatusUserSchema.entity
-        entity.Set[IDictionary[str, str]]("discipline_by_user", stored)
+        entity.Set[IDictionary[str, str]](FIELD_DISCIPLINE_BY_USER, stored)
         storage.SetEntity(entity)
     log_info("User discipline saved")
     return True

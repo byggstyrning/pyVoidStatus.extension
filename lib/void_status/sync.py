@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """Synchronize approval statuses from a linked model into host openings.
 
-Pick a linked Revit/IFC model, choose which discipline codes to import, and
-merge those codes into matching host openings. Other disciplines already on
-the host stay in place. Only Approved by / Rejected by / Pending by are written.
+Only Approved by / Rejected by / Pending by are written. Other disciplines
+already on the host stay in place.
 """
 
 from Autodesk.Revit.DB import (
@@ -12,24 +11,22 @@ from Autodesk.Revit.DB import (
     RevitLinkInstance,
 )
 
-from void_status.constants import (
-    canonical_discipline_code,
-    MATCH_KEY,
-    OBJECT_ID,
-)
+from void_status.contract import canonical_discipline_code, MATCH_KEY, OBJECT_ID
 from void_status.parameters import get_parameter, get_string_value, set_string_value
 from void_status.values import (
     STATUS_FIELDS,
     apply_synced_code,
     code_in_fields,
     split_values,
-    identity_values_from_keys,
+    index_match_keys,
+    match_against_index,
 )
-from void_status.logutil import (
-    log_debug,
-    log_info,
-    log_warning,
-    element_label,
+from void_status.logutil import log_debug, log_info, log_warning, element_label
+
+_STATUS_KEYS = (
+    ("approved_by", "approved"),
+    ("rejected_by", "rejected"),
+    ("pending_by", "pending"),
 )
 
 
@@ -63,7 +60,7 @@ def list_loaded_links(doc):
 
 
 def link_info_for_type(doc, link_type_id):
-    """Return the loaded link dict for a ``RevitLinkType`` id, or None."""
+    """Return the loaded link dict for a RevitLinkType id, or None."""
     if doc is None or link_type_id is None:
         return None
     for inst in FilteredElementCollector(doc).OfClass(RevitLinkInstance):
@@ -104,18 +101,12 @@ def iter_status_elements(doc, config):
 
 def read_status_fields(element, config):
     fields = {}
-    for key, field in (
-        ("approved_by", "approved"),
-        ("rejected_by", "rejected"),
-        ("pending_by", "pending"),
-    ):
+    for key, field in _STATUS_KEYS:
         mapped = config.parameter(key)
         if not mapped:
             fields[field] = ""
             continue
-        fields[field] = get_string_value(
-            element, guid=mapped["guid"], name=mapped["name"]
-        )
+        fields[field] = get_string_value(element, guid=mapped["guid"], name=mapped["name"])
     return fields
 
 
@@ -164,17 +155,14 @@ def collect_link_disciplines(link_doc, config, separator):
 
 
 def _identity_text(element, mapping):
-    """Read an identity parameter by GUID, then name."""
-    value = get_string_value(
-        element, guid=mapping["guid"], name=mapping["name"]
-    )
+    value = get_string_value(element, guid=mapping["guid"], name=mapping["name"])
     if value:
         return value.strip()
     return ""
 
 
 def _ifc_guid(element):
-    """Revit built-in IFC GUID of *this* element (not the MatchKey parameter)."""
+    """Built-in IFC GUID of this element, not the MatchKey parameter."""
     try:
         param = element.get_Parameter(BuiltInParameter.IFC_GUID)
         if param:
@@ -187,18 +175,10 @@ def _ifc_guid(element):
 
 
 def element_match_keys(element):
-    """Ordered identity keys used to pair host openings with linked openings.
+    """Identity keys used to pair host openings with linked openings.
 
-    Priority is identity parameters, not Revit element identity:
-
-    1. **MatchKey** — IfcGuid of the reference element. Two independently
-       generated openings from the same duct/pipe share this value, and a host
-       opening adopted from a linked opening stores that opening's IFC GUID here.
-    2. **ObjectId** — per-opening identity.
-    3. Built-in **IFC_GUID** — useful for IFC-linked models.
-    4. **UniqueId** — almost never matches across two .rvt files; kept last.
-
-    Mark is not used: it is not an identity field and collides easily.
+    MatchKey, ObjectId, and the built-in IFC GUID are compared by value.
+    UniqueId is last and almost never matches across two files.
     """
     keys = []
     match_key = _identity_text(element, MATCH_KEY)
@@ -229,31 +209,11 @@ def _has_opening_identity(element):
 
 
 def build_host_index(host_elements):
-    """Map identity values to host elements. Ambiguous values are dropped.
-
-    MatchKey / ObjectId / IfcGUID are indexed by *value* so a host MatchKey
-    can pair with a linked opening's IfcGUID.
-    """
-    buckets = {}
-    for element in host_elements:
-        keys = element_match_keys(element)
-        for value in identity_values_from_keys(keys):
-            buckets.setdefault(("id", value), []).append(element)
-        for kind, value in keys:
-            if kind == "uniqueid":
-                buckets.setdefault(("uniqueid", value), []).append(element)
-    index = {}
-    ambiguous_keys = 0
-    for key, elements in buckets.items():
-        if len(elements) == 1:
-            index[key] = elements[0]
-        else:
-            ambiguous_keys += 1
-            log_debug(
-                "Ambiguous host match key {}={} on {} elements; ignored".format(
-                    key[0], key[1], len(elements)
-                )
-            )
+    """Map identity values to host elements. Ambiguous values are dropped."""
+    entries = [(element, element_match_keys(element)) for element in host_elements]
+    index, ambiguous_keys = index_match_keys(entries)
+    if ambiguous_keys:
+        log_debug("Ambiguous host match keys dropped: {}".format(ambiguous_keys))
     log_info(
         "Host index: {} openings, {} unique keys, {} ambiguous keys dropped".format(
             len(host_elements), len(index), ambiguous_keys
@@ -263,48 +223,31 @@ def build_host_index(host_elements):
 
 
 def find_host_match(link_element, host_index):
-    """Return ``(host_element, method)`` or ``(None, None)``.
-
-    Pairing is identity only: MatchKey / ObjectId / IfcGUID values, then UniqueId.
-    """
+    """Return ``(host_element, method)`` or ``(None, None)``."""
     keys = element_match_keys(link_element)
     log_debug(
         "Link {} keys: {}".format(
             element_label(link_element),
-            ", ".join(["{}={}".format(k, v) for k, v in keys]) or "none",
+            ", ".join(["{}={}".format(kind, value) for kind, value in keys]) or "none",
         )
     )
-    for key in identity_values_from_keys(keys):
-        host = host_index.get(("id", key))
-        if host is not None:
-            log_debug(
-                "Matched {} -> {} via identity {}".format(
-                    element_label(link_element), element_label(host), key
-                )
+    host, method = match_against_index(keys, host_index)
+    if host is None:
+        log_debug("No identity match for {}".format(element_label(link_element)))
+        return None, None
+    if method == "identity":
+        log_debug(
+            "Matched {} -> {} via identity".format(
+                element_label(link_element), element_label(host)
             )
-            return host, "identity"
-    unique_id = None
-    for kind, value in keys:
-        if kind == "uniqueid":
-            unique_id = value
-            break
-    if unique_id:
-        host = host_index.get(("uniqueid", unique_id))
-        if host is not None:
-            return host, "uniqueid"
-    log_debug("No identity match for {}".format(element_label(link_element)))
-    return None, None
+        )
+    return host, method
 
 
 def write_status_fields(element, config, fields):
     """Write merged status strings. Returns True if any parameter was set."""
     wrote = False
-    mapping = (
-        ("approved_by", "approved"),
-        ("rejected_by", "rejected"),
-        ("pending_by", "pending"),
-    )
-    for key, field in mapping:
+    for key, field in _STATUS_KEYS:
         mapped = config.parameter(key)
         if not mapped:
             continue
@@ -321,11 +264,7 @@ def write_status_fields(element, config, fields):
     return wrote
 
 
-def synchronize_from_link(host_doc, link_info, config, selected_codes, separator):
-    """Merge selected discipline codes from a linked model into host openings.
-
-    Returns a result dict with counts.
-    """
+def _selected_codes(selected_codes):
     selected = []
     seen = set()
     for code in selected_codes or []:
@@ -337,7 +276,12 @@ def synchronize_from_link(host_doc, link_info, config, selected_codes, separator
             continue
         seen.add(key)
         selected.append(canon)
+    return selected
 
+
+def synchronize_from_link(host_doc, link_info, config, selected_codes, separator):
+    """Merge selected discipline codes from a linked model into host openings."""
+    selected = _selected_codes(selected_codes)
     result = {
         "updated": 0,
         "unchanged": 0,
@@ -355,10 +299,9 @@ def synchronize_from_link(host_doc, link_info, config, selected_codes, separator
             link_info.get("name"), selected, separator
         )
     )
-
     link_doc = link_info["document"]
     status_elements = list(iter_status_elements(host_doc, config))
-    host_elements = [el for el in status_elements if _has_opening_identity(el)]
+    host_elements = [element for element in status_elements if _has_opening_identity(element)]
     log_info(
         "Host openings with status params: {} (with MatchKey/ObjectId: {})".format(
             len(status_elements), len(host_elements)
@@ -380,12 +323,7 @@ def synchronize_from_link(host_doc, link_info, config, selected_codes, separator
                 link_fields.get("pending"),
             )
         )
-        relevant = False
-        for code in selected:
-            if code_in_fields(link_fields, code, separator):
-                relevant = True
-                break
-        if not relevant:
+        if not any(code_in_fields(link_fields, code, separator) for code in selected):
             result["skipped"] += 1
             log_debug("Skipped {} (no selected codes)".format(element_label(link_element)))
             continue
@@ -393,16 +331,14 @@ def synchronize_from_link(host_doc, link_info, config, selected_codes, separator
         host_element, method = find_host_match(link_element, host_index)
         if host_element is None:
             result["unmatched"] += 1
-            log_debug(
-                "Unmatched linked opening {}".format(element_label(link_element))
-            )
+            log_debug("Unmatched linked opening {}".format(element_label(link_element)))
             result["unmatched_items"].append(
                 {
                     "label": element_label(link_element),
                     "keys": [
-                        "{}={}".format(k, v)
-                        for k, v in element_match_keys(link_element)
-                        if k != "uniqueid"
+                        "{}={}".format(kind, value)
+                        for kind, value in element_match_keys(link_element)
+                        if kind != "uniqueid"
                     ],
                 }
             )
@@ -422,13 +358,10 @@ def synchronize_from_link(host_doc, link_info, config, selected_codes, separator
         new_fields = dict(host_fields)
         any_change = False
         for code in selected:
-            new_fields, changed = apply_synced_code(
-                new_fields, link_fields, code, separator
-            )
+            new_fields, changed = apply_synced_code(new_fields, link_fields, code, separator)
             if changed:
                 any_change = True
                 log_debug("Applied code {} from link onto host".format(code))
-
         if not any_change:
             result["unchanged"] += 1
             log_info("Already in sync: {}".format(element_label(host_element)))

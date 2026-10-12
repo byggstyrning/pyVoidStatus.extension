@@ -1,29 +1,29 @@
 # -*- coding: utf-8 -*-
-"""Split and join multi-discipline parameter values.
+"""Multi-discipline value lists and opening match indexes. No Revit imports.
 
-Approved by / Pending by / Rejected by are *value lists*.
-Each token is a discipline code (ARC, STR, ELEC, ...). Combined profile
-values such as ``HVAC & PLBG`` are a single token — ``&`` is not a separator.
-
-Other disciplines already on the element are always preserved. We only add
-or remove the current profile code.
+Approved by / Pending by / Rejected by store discipline codes separated by
+comma or semicolon. ``HVAC & PLBG`` is one token: ampersand is not a separator.
 """
 
-from void_status.constants import DEFAULT_VALUE_SEPARATOR
+from void_status.contract import DEFAULT_VALUE_SEPARATOR
+
+STATUS_FIELDS = ("approved", "rejected", "pending")
+
+
+def _separator(separator):
+    if separator is None:
+        return DEFAULT_VALUE_SEPARATOR
+    return separator
 
 
 def split_values(raw, separator):
-    """Split a stored multi-value string into trimmed tokens.
-
-    List delimiters are comma and semicolon. Ampersand is kept inside a token
-    so ``HVAC & PLBG`` stays one value.
-    """
+    """Split a stored multi-value string into trimmed, unique tokens."""
     if not raw:
         return []
-    # Normalize only list delimiters; do not touch '&'.
     normalized = raw.replace(";", ",")
-    configured = separator if separator is not None else DEFAULT_VALUE_SEPARATOR
-    if configured and configured.strip() and configured.strip() not in (",", ";"):
+    configured = _separator(separator)
+    stripped = configured.strip() if configured else ""
+    if stripped and stripped not in (",", ";"):
         normalized = normalized.replace(configured, ",")
     parts = []
     seen = set()
@@ -40,8 +40,7 @@ def split_values(raw, separator):
 
 
 def join_values(values, separator):
-    """Join tokens using the project separator, keeping original order."""
-    sep = separator if separator is not None else DEFAULT_VALUE_SEPARATOR
+    """Join tokens with the project separator, keeping the first occurrence."""
     cleaned = []
     seen = set()
     for item in values:
@@ -53,57 +52,76 @@ def join_values(values, separator):
             continue
         seen.add(key)
         cleaned.append(text)
-    return sep.join(cleaned)
+    return _separator(separator).join(cleaned)
 
 
 def add_value(raw, value, separator):
-    """Append *value* if missing. Existing tokens from other disciplines stay."""
+    """Append *value* when it is missing. Other disciplines stay."""
     values = split_values(raw, separator)
     needle = (value or "").strip()
-    if not needle:
-        return join_values(values, separator)
-    if needle.lower() not in [v.lower() for v in values]:
+    if needle and needle.lower() not in [item.lower() for item in values]:
         values.append(needle)
     return join_values(values, separator)
 
 
 def remove_value(raw, value, separator):
-    """Remove only an exact code match. Other disciplines stay."""
-    values = split_values(raw, separator)
+    """Remove one exact code. Other disciplines stay."""
     needle = (value or "").strip().lower()
-    kept = [v for v in values if v.lower() != needle]
+    kept = [
+        item for item in split_values(raw, separator) if item.lower() != needle
+    ]
     return join_values(kept, separator)
 
 
-STATUS_FIELDS = ("approved", "rejected", "pending")
+def edit_status_fields(fields, add_key, remove_keys, code, separator):
+    """Add *code* to one status parameter and remove only that code from the others.
+
+    *fields* is keyed by parameter key (``approved_by``, ``pending_by``,
+    ``rejected_by``).
+    """
+    updated = {}
+    for key in fields:
+        updated[key] = fields.get(key) or ""
+    updated[add_key] = add_value(fields.get(add_key) or "", code, separator)
+    for key in remove_keys:
+        source = updated.get(key, fields.get(key) or "")
+        updated[key] = remove_value(source, code, separator)
+    return updated
 
 
 def code_in_fields(fields, code, separator):
-    """True if *code* appears in any status field."""
+    """True when *code* appears in any status bucket."""
     needle = (code or "").strip().lower()
     if not needle:
         return False
     for field in STATUS_FIELDS:
-        tokens = [t.lower() for t in split_values(fields.get(field) or "", separator)]
+        tokens = [
+            token.lower()
+            for token in split_values(fields.get(field) or "", separator)
+        ]
         if needle in tokens:
             return True
     return False
 
 
 def apply_synced_code(host_fields, link_fields, code, separator):
-    """Move *code* on the host into the same status bucket as the linked opening.
+    """Move *code* on the host into the same bucket as the linked opening.
 
-    Other host disciplines are left untouched. Returns ``(new_fields, changed)``.
-    If *code* is not present on the linked opening, host fields are unchanged.
+    Other host disciplines stay. Returns ``(new_fields, changed)``.
+    When *code* is absent from the link, the host fields are unchanged.
     """
     needle = (code or "").strip()
     if not needle:
         return dict(host_fields), False
 
     target = None
+    lowered = needle.lower()
     for field in STATUS_FIELDS:
-        tokens = [t.lower() for t in split_values(link_fields.get(field) or "", separator)]
-        if needle.lower() in tokens:
+        tokens = [
+            token.lower()
+            for token in split_values(link_fields.get(field) or "", separator)
+        ]
+        if lowered in tokens:
             target = field
             break
     if target is None:
@@ -119,29 +137,66 @@ def apply_synced_code(host_fields, link_fields, code, separator):
 
     changed = False
     for field in STATUS_FIELDS:
-        before = split_values(host_fields.get(field) or "", separator)
-        after = split_values(new_fields[field], separator)
-        if [t.lower() for t in before] != [t.lower() for t in after]:
+        before = [token.lower() for token in split_values(host_fields.get(field) or "", separator)]
+        after = [token.lower() for token in split_values(new_fields[field], separator)]
+        if before != after:
             changed = True
             break
     return new_fields, changed
 
 
 def identity_values_from_keys(keys):
-    """Identity strings that pair openings across models.
-
-    **MatchKey** is the IfcGuid of the reference element. A host opening
-    adopted from a linked opening therefore stores that opening's IFC GUID
-    as MatchKey. Compare MatchKey / ObjectId / IfcGUID *values*
-    regardless of which field they came from. UniqueId is file-local.
-    """
+    """MatchKey / ObjectId / IfcGUID values. UniqueId is file-local and skipped."""
     values = []
     seen = set()
     for kind, value in keys or []:
-        if kind == "uniqueid" or not value:
-            continue
-        if value in seen:
+        if kind == "uniqueid" or not value or value in seen:
             continue
         seen.add(value)
         values.append(value)
     return values
+
+
+def index_match_keys(entries):
+    """Index ``[(item, keys), ...]``.
+
+    Ambiguous values are dropped. Keys are ``("id", value)`` or
+    ``("uniqueid", value)``. Returns ``(index, ambiguous_count)``.
+    """
+    buckets = {}
+    for item, keys in entries:
+        for value in identity_values_from_keys(keys):
+            buckets.setdefault(("id", value), []).append(item)
+        for kind, value in keys or []:
+            if kind == "uniqueid" and value:
+                buckets.setdefault(("uniqueid", value), []).append(item)
+
+    index = {}
+    ambiguous = 0
+    for key, items in buckets.items():
+        if len(items) == 1:
+            index[key] = items[0]
+        else:
+            ambiguous += 1
+    return index, ambiguous
+
+
+def match_against_index(keys, index):
+    """Return ``(item, method)`` or ``(None, None)``.
+
+    Identity values are tried before UniqueId.
+    """
+    for value in identity_values_from_keys(keys):
+        item = index.get(("id", value))
+        if item is not None:
+            return item, "identity"
+    unique_id = None
+    for kind, value in keys or []:
+        if kind == "uniqueid":
+            unique_id = value
+            break
+    if unique_id:
+        item = index.get(("uniqueid", unique_id))
+        if item is not None:
+            return item, "uniqueid"
+    return None, None

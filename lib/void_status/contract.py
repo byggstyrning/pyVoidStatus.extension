@@ -1,10 +1,28 @@
 # -*- coding: utf-8 -*-
-"""Shared-parameter GUIDs and default project XML."""
+"""Frozen Void Status identifiers.
+
+Live Revit files already store these GUIDs, XML tags, and extensible-storage
+field names. Changing any of them makes existing models unreadable.
+"""
 
 SCHEMA_VERSION = "1.0"
 
-# Coordination parameters used for void approval. GUIDs must stay identical
-# so existing models that already have these parameters keep working.
+# DataStorage schemas. Field names are the extensible-storage field names.
+PROJECT_SCHEMA_GUID = "c8e4f2a1-7b39-4d6e-9a5c-1f8d2e4b6a70"
+FIELD_SCHEMA_VERSION = "schema_version"
+FIELD_CONFIG_XML = "config_xml"
+
+USER_SCHEMA_GUID = "c8e4f2a1-7b39-4d6e-9a5c-1f8d2e4b6a71"
+FIELD_DISCIPLINE_BY_USER = "discipline_by_user"
+
+# pyRevit user-config section on this workstation. Discipline for a model
+# lives in the Revit file; the name, and a leftover discipline, stay here.
+PROFILE_SECTION = "VoidStatus"
+PROFILE_NAME_KEY = "profile_name"
+PROFILE_DISCIPLINE_KEY = "profile_discipline"
+
+# Coordination parameters. GUIDs must stay identical so models that already
+# have these parameters keep working.
 STATUS_PARAMETERS = (
     {
         "key": "drawn_by",
@@ -67,8 +85,7 @@ STATUS_PARAMETERS = (
 PARAM_BY_KEY = dict((item["key"], item) for item in STATUS_PARAMETERS)
 
 # Identity parameters used to pair openings across linked models.
-# MatchKey is the IfcGuid of the reference element (the duct/pipe/opening
-# the void was created or adopted from).
+# MatchKey is the IfcGuid of the reference element.
 MATCH_KEY = {
     "guid": "2e9bc4c8-bf25-4700-b8ee-14294918ffa6",
     "name": "MatchKey",
@@ -78,9 +95,8 @@ OBJECT_ID = {
     "name": "ObjectId",
 }
 
-# Profile value list. The *code* is what gets written into
-# Approved by / Pending by / Rejected by. Combined entries (with &) are a
-# single list value, not two disciplines glued together.
+# The code is what gets written into Approved by / Pending by / Rejected by.
+# Combined entries (with &) are a single list value.
 DEFAULT_DISCIPLINES = (
     ("ARC", "Architectural"),
     ("STR", "Structural"),
@@ -96,7 +112,7 @@ DEFAULT_DISCIPLINES = (
     ("PLGB & ELEC", "Plumbing and Electrical"),
 )
 
-# Full names from the first Config default → value-list codes.
+# Full names from the first Config default, mapped to value-list codes.
 LEGACY_DISCIPLINE_MAP = {
     "Architecture": "ARC",
     "Architectural": "ARC",
@@ -113,9 +129,24 @@ LEGACY_DISCIPLINE_MAP = {
 
 DISCIPLINE_CODES = tuple(code for code, _label in DEFAULT_DISCIPLINES)
 
+# Names that mean "this XML still has the first-version full-name list".
+# HVAC is excluded from the "already migrated" check because that word
+# appeared in the old list as well as in the code list.
+LEGACY_DISCIPLINE_MARKERS = (
+    "Architecture",
+    "Architectural",
+    "Structure",
+    "Structural",
+    "Electrical",
+    "Plumbing",
+    "Fire Protection",
+    "Sprinkler",
+    "Coordination",
+)
+
 
 def canonical_discipline_code(value):
-    """Return the discipline code for a stored profile/XML discipline string."""
+    """Return the discipline code for a stored profile or XML discipline string."""
     text = (value or "").strip()
     if not text:
         return ""
@@ -125,6 +156,7 @@ def canonical_discipline_code(value):
     lower_map = dict((key.lower(), mapped) for key, mapped in LEGACY_DISCIPLINE_MAP.items())
     return lower_map.get(text.lower(), text)
 
+
 DEFAULT_CATEGORIES = (
     "OST_GenericModel",
     "OST_Windows",
@@ -132,6 +164,7 @@ DEFAULT_CATEGORIES = (
     "OST_ShaftOpening",
     "OST_Opening",
     "OST_SWallRectOpening",
+    "OST_MechanicalEquipment",
 )
 
 CATEGORY_CHOICES = (
@@ -141,9 +174,56 @@ CATEGORY_CHOICES = (
     ("OST_ShaftOpening", "Shaft Openings"),
     ("OST_Opening", "Openings"),
     ("OST_SWallRectOpening", "Rectangular wall openings"),
+    ("OST_MechanicalEquipment", "Mechanical Equipment"),
 )
 
+
+def categories_for_ensure(selected):
+    """Categories to bind. Mechanical Equipment is always included."""
+    names = []
+    seen = set()
+    for name in list(selected or []) + ["OST_MechanicalEquipment"]:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
 DEFAULT_VALUE_SEPARATOR = ", "
+
+# Approve / Pending / Reject. Each action adds the user's code to one
+# parameter and removes only that code from the other two.
+ACTIONS = {
+    "approve": {
+        "title": "Approve",
+        "add_key": "approved_by",
+        "remove_keys": ("pending_by", "rejected_by"),
+    },
+    "pending": {
+        "title": "Pending",
+        "add_key": "pending_by",
+        "remove_keys": ("approved_by", "rejected_by"),
+    },
+    "reject": {
+        "title": "Reject",
+        "add_key": "rejected_by",
+        "remove_keys": ("approved_by", "pending_by"),
+    },
+}
+
+# Reset clears every discipline in the chosen fields, not only the current user.
+RESET_TARGETS = {
+    "all": ("approved_by", "rejected_by", "pending_by"),
+    "approved": ("approved_by",),
+    "rejected": ("rejected_by",),
+    "pending": ("pending_by",),
+}
+
+STATUS_FIELD_BY_KEY = {
+    "approved_by": "approved",
+    "rejected_by": "rejected",
+    "pending_by": "pending",
+}
 
 DEFAULT_XML = """<?xml version="1.0" encoding="utf-8"?>
 <VoidStatus version="1.0">
@@ -178,6 +258,7 @@ DEFAULT_XML = """<?xml version="1.0" encoding="utf-8"?>
     <Category>OST_ShaftOpening</Category>
     <Category>OST_Opening</Category>
     <Category>OST_SWallRectOpening</Category>
+    <Category>OST_MechanicalEquipment</Category>
   </Categories>
   <Options>
     <ValueSeparator>, </ValueSeparator>
