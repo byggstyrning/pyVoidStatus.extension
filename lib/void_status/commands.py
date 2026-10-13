@@ -117,11 +117,19 @@ def apply_status(action_name):
     doc = revit.doc
     profile = load_profile(doc)
     discipline = (profile.get("discipline") or "").strip()
+    drawer_name = (profile.get("name") or "").strip()
     if not discipline:
         log_warning("Action aborted: no discipline for this user in this model")
         _alert(
             "Set your discipline in Add-Ins → Void Status → Config before approving openings.\n\n"
             "Discipline is stored for you in this Revit file."
+        )
+        return False
+    if not drawer_name:
+        log_warning("Action aborted: no profile name")
+        _alert(
+            "Set your name in Add-Ins → Void Status → Config before approving openings.\n\n"
+            "That name is written to Drawn by."
         )
         return False
 
@@ -135,7 +143,7 @@ def apply_status(action_name):
     if debug:
         log_debug(
             "Profile name={!r} discipline={!r} selection={}".format(
-                profile.get("name"), discipline, len(selection_ids)
+                drawer_name, discipline, len(selection_ids)
             )
         )
 
@@ -144,6 +152,7 @@ def apply_status(action_name):
         return False
 
     separator = config.value_separator
+    drawn_map = config.parameter("drawn_by")
     add_map = config.parameter(spec["add_key"])
     if not add_map:
         log_error("Missing parameter mapping for {}".format(spec["add_key"]))
@@ -200,6 +209,17 @@ def apply_status(action_name):
                             element_label(element),
                         )
                     )
+
+            if not drawn_map:
+                log_warning("No Drawn by mapping in project XML")
+            else:
+                drawn_param = get_parameter(
+                    element, guid=drawn_map["guid"], name=drawn_map["name"]
+                )
+                if not drawn_param:
+                    log_warning("No Drawn by parameter on {}".format(element_label(element)))
+                elif not set_string_value(drawn_param, drawer_name):
+                    log_warning("Could not write Drawn by on {}".format(element_label(element)))
 
             if debug:
                 log_debug("After  {} {}".format(element_label(element), _snapshot(element, config)))

@@ -37,7 +37,7 @@ Approve / Pending / Reject look up parameters by GUID first, then by name, so th
 
 ## Actions
 
-Each action writes your **discipline code** (``STR``, ``ARC``, ``ELEC``, …) into the matching parameter. Combined codes such as ``HVAC & PLBG`` are one list value. Other disciplines already on the element are left in place (multi-approved). The default separator is ``, ``.
+Each action writes your configured **name** into **Drawn by**, and your **discipline code** (``STR``, ``ARC``, ``ELEC``, …) into the matching status parameter. Combined codes such as ``HVAC & PLBG`` are one list value. Other disciplines already on the element are left in place (multi-approved). The default separator is ``, ``.
 
 | Button | Adds your code to | Removes only your code from |
 | --- | --- | --- |
@@ -45,7 +45,7 @@ Each action writes your **discipline code** (``STR``, ``ARC``, ``ELEC``, …) in
 | Pending | Pending by | Approved by, Rejected by |
 | Reject | Rejected by | Approved by, Pending by |
 
-Drawn by / Drawn Date / Drawn Status are **not** this value list: they are the author name, a date, and the drawing state (Created, Changed, Up to Date).
+**Drawn by** is that configured name, not a discipline code. Drawn Date and Drawn Status are left unchanged.
 
 ## Sync from a linked model
 
